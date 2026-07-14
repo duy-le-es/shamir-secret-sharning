@@ -1,110 +1,85 @@
 # Tracelium — Recovery Demo Prototype
 
-Prototype React cho khách hàng **tự thao tác** cơ chế zero-knowledge recovery:
-Shamir Secret Sharing, break-glass quorum, key reset và audit log.
+A React prototype that lets customers **walk through** zero-knowledge recovery end to end: Shamir Secret Sharing, break-glass quorum, key reset, and audit logging.
 
-## Chạy
+## Getting started
 
 ```bash
 npm install
 npm run dev      # http://localhost:5173
 ```
 
-Không cần backend — toàn bộ chạy trong browser. Mọi key material được tạo thật
-bằng **Web Crypto API** (không phải fake string):
+No backend is required — everything runs in the browser. All key material is generated with the **Web Crypto API** (not placeholder strings):
 
-- User key pair: RSA-OAEP 2048
-- Workspace Key: AES-256-GCM, wrap riêng cho từng user (key envelope)
-- Recovery Secret: 32 bytes, chia bằng thư viện `shamir-secret-sharing` (GF(256))
-- Recovery envelope: AES-GCM(WorkspaceKey, key = RecoverySecret)
-- Khi đủ quorum: shares được combine thật, envelope được decrypt thật,
-  Workspace Key được re-wrap thật cho key mới — sau đó secret bị wipe khỏi memory.
+- **User key pair:** RSA-OAEP 2048
+- **Vault Key:** AES-256-GCM, wrapped per user (key envelopes)
+- **Recovery Secret:** 32 random bytes, split with `shamir-secret-sharing` (GF(256))
+- **Recovery envelope:** AES-GCM(Vault Key, key = Recovery Secret)
+- **On quorum:** shares are combined for real, the envelope is decrypted for real, the Vault Key is re-wrapped for real onto the new identity material — then the secret is wiped from memory
 
-Key thật chỉ sống trong `src/services/vault.ts` (in-memory). UI state (Zustand)
-chỉ chứa fingerprint và version label — không bao giờ chứa key/share/secret.
+Live secrets exist only in `src/services/vault.ts` (in-memory). UI state (Zustand) holds fingerprints and version labels only — never raw keys, shares, or secrets.
 
-## Hai demo chính (Dashboard hoặc Demo Mode)
+## Main demos (Members / Demo Mode)
 
-| Demo | Nội dung | Log chứng minh |
+| Demo | What happens | What the Crypto Trace proves |
 | --- | --- | --- |
-| **Demo 1 — Tạo, phân mảnh & lưu Recovery Code** | Workspace mới chưa có recovery code → trang **Recovery Setup** hiện modal cảnh báo bắt buộc (không tắt được) → wizard 4 bước: chọn quorum → add người có quyền → tạo & split → done | Secret 32 bytes tạo client-side → Shamir split 3 shares (fingerprint + holder) → shares lưu về custody từng người → seal envelope → wipe plaintext |
-| **Demo 2 — Mất tài khoản: request → approve → tổng hợp → mã hóa lại** | Alice mất credentials → request → đổi role từng approver duyệt → Begin Recovery | Approver chỉ thấy metadata; mỗi approval được ghi lại (signed record + share authorized) và tổng hợp 1/2 → 2/2; combine shares → fingerprint khớp setup → re-wrap (mã hóa lại) → destroy temp secret |
+| **Demo 1 — Create, split & store the Recovery Secret** | Fresh workspace with no recovery setup → mandatory **Recovery Setup** flow → configure quorum → add custodians → generate & split → done | 32-byte secret created client-side → Shamir split into N shares (fingerprint + holder) → shares held in custodian custody → Vault Key sealed → plaintext wiped |
+| **Demo 2 — Lost account: request → approvals → reconstruct → re-wrap** | Affected user loses credentials → recovery request → switch roles to approve as each custodian → Begin Recovery | Approvers see metadata only; each approval is recorded; quorum progresses (e.g. 1/2 → 2/2); shares combine → commitment matches setup → Vault Key recovered and re-wrapped → temporary secret destroyed |
 
-Trang **Demo Mode** có script từng bước cho presenter, kèm Other tools: đổi
-scenario single-owner, variant user thường (Owner approve), Recovery Test,
-Reset Demo.
+**Demo Mode** includes a presenter script plus extras: single-owner risk scenario, standard user-key reset (Owner approval), Recovery Test, and Reset Demo.
 
-## Cấu trúc
+## Project layout
 
 ```
 src/
-├── app/App.tsx              # layout + router + role switcher
-├── pages/                   # Dashboard, Members, Policy, Requests, Detail, Audit, Demo
-├── components/              # QuorumProgress, RecoveryTimeline, Pills, Banners…
+├── app/App.tsx              # layout, router, role switcher
+├── pages/                   # Members, Policy, Requests, Detail, Audit, Demo, …
+├── components/              # QuorumProgress, RecoveryTimeline, Pills, Banners, …
 ├── services/
 │   ├── crypto.service.ts    # keygen, fingerprint (Web Crypto)
-│   ├── shamir.service.ts    # split/combine (shamir-secret-sharing)
-│   ├── envelope.service.ts  # wrap/unwrap + recovery envelope
-│   └── vault.ts             # in-memory key vault (không bao giờ vào UI state)
+│   ├── shamir.service.ts    # split / combine (shamir-secret-sharing)
+│   ├── envelope.service.ts  # wrap / unwrap + recovery envelope
+│   └── vault.ts             # in-memory key vault (never mirrored into UI state)
 ├── store/store.ts           # Zustand: state machine, quorum, audit, scenarios
-└── models/types.ts          # User, RecoveryPolicy, RecoveryRequest, AuditEvent…
+└── models/types.ts          # User, RecoveryPolicy, RecoveryRequest, AuditEvent, …
 ```
 
-Request state machine: `PENDING_APPROVAL → QUORUM_REACHED → RECOVERY_IN_PROGRESS
-→ COMPLETED` (+ `REJECTED / FAILED / EXPIRED / CANCELLED`). Mỗi lần đổi state
-sinh audit event; audit không bao giờ chứa share value, secret, private key hay
-Recovery Code.
+Typical request lifecycle: `PENDING_OWNER_APPROVAL` / `PENDING_APPROVAL` → `QUORUM_REACHED` → `RECOVERY_IN_PROGRESS` → `AWAITING_USER_CONFIRMATION` → `AWAITING_NEW_PASSWORD` → `COMPLETED` (plus `REJECTED` / `FAILED` / `EXPIRED` / `CANCELLED`). Every transition writes an audit event. Audit never records share values, secrets, private keys, or Personal Recovery Codes.
 
-## Key Architecture (sidebar)
+## Key Architecture
 
-Màn hình trả lời trực tiếp hai câu hỏi cốt lõi của technical solution:
+The Key Architecture view answers the two questions that matter for the technical solution:
 
-- **Key lưu ở đâu** — "Live trust boundaries": 3 cột custody đọc từ vault thật
-  (User trusted clients / Tracelium server zero-knowledge / Recovery party
-  custody) + bảng Key inventory (9 loại key: tạo khi nào, tạo ở đâu, lưu ở đâu,
-  server thấy gì).
-- **Recovery key tạo khi nào** — timeline 5 mốc: account creation → workspace
-  creation → **Recovery Setup generation** (Recovery Secret + shares + recovery
-  envelope sinh ra tại đây, không phải từ ngày đầu) → key reset → break-glass.
+- **Where keys live** — live trust boundaries (user clients / Tracelium server as ciphertext-only / recovery-party custody) plus a key inventory (created when, created where, stored where, what the server can see).
+- **When recovery material is created** — timeline from account creation → workspace creation → **Recovery Setup** (Recovery Secret, shares, and recovery envelope are born here — not on day one) → key reset → break-glass.
 
-## Crypto Trace console
+## Crypto Trace
 
-Nút **`</>` Crypto Trace** trên topbar (hoặc "View Crypto Trace" trong Recovery
-Policy) mở console log trực tiếp mọi thao tác crypto thật khi chúng diễn ra:
+The **`</>` Crypto Trace** control (top bar, or from Recovery Policy) streams real cryptographic operations as they happen:
 
-- `KEYGEN` — tạo RSA keypair / AES Workspace Key / Recovery Secret (kèm SHA-256 commitment)
-- `SHAMIR` — split/combine shares (hash từng share, tham số threshold)
-- `WRAP` — wrap Workspace Key thành envelope (preview ciphertext)
-- `ENVELOPE` — seal/open recovery envelope (IV, auth tag verified)
-- `VERIFY` — **bằng chứng**: hash secret reconstruct == hash lúc setup; hash
-  Workspace Key recover == hash lúc tạo (chứng minh không cần re-encrypt data);
-  tamper test — share bị sửa 1 byte bị AES-GCM từ chối
-- `WIPE` — thời điểm secret bị xóa khỏi memory
+- `KEYGEN` — RSA key pairs / Vault Key / Recovery Secret (with SHA-256 commitment)
+- `SHAMIR` — split / combine (per-share hashes, threshold parameters)
+- `WRAP` — wrap Vault Key into envelopes (ciphertext preview)
+- `ENVELOPE` — seal / open recovery envelope (IV, auth-tag verification)
+- `VERIFY` — reconstructed secret hash matches setup commitment; recovered Vault Key matches original (proves data need not be re-encrypted); tamper check — a one-byte share mutation is rejected by AES-GCM
+- `WIPE` — moment the secret is cleared from memory
 
-Console không bao giờ in giá trị secret/share/private key — chỉ SHA-256
-commitment, đủ để chứng minh tính đúng mà không phá zero-knowledge.
+The console never prints secret, share, or private-key values — only SHA-256 commitments, enough to prove correctness without breaking the zero-knowledge story.
 
-## Ranh giới tin cậy được chứng minh trong demo
+## Trust boundaries demonstrated
 
-- Owner approve reset **không** lấy lại được private key cũ — chỉ tạo identity mới.
-- Reset key chỉ re-wrap envelope, **không** mã hóa lại workspace data.
-- Recovery Secret chỉ tồn tại tạm trong memory khi đủ quorum, có countdown, bị
-  wipe ngay sau khi re-wrap xong.
-- Tracelium System Admin không có workspace envelope và không bao giờ tự đạt
-  quorum một mình (UI chặn + logic chặn).
-- 1-of-1 / secondary email của chính owner đều có cảnh báo trade-off rõ ràng.
+- Owner approval of a reset **does not** restore the old private key — a new identity is issued.
+- Key reset re-wraps envelopes; it **does not** re-encrypt workspace data.
+- The Recovery Secret exists only transiently in memory once quorum is met, with a countdown, and is wiped immediately after re-wrap.
+- The Tracelium System Admin has no workspace envelope and can never reach quorum alone (UI and logic both enforce this).
+- 1-of-1 quorums and owner-controlled secondary email identities surface explicit trade-off warnings.
 
-## Kiểm thử
+## Testing
 
-- `npm run typecheck` — typecheck TypeScript.
-- `npm run test:logic` — end-to-end logic: chạy store thật (crypto thật) qua cả
-  3 scenario, ~50 assertions, không cần browser.
-- `npm run test:ui` — end-to-end UI: điều khiển Chrome headless click qua toàn bộ
-  demo flow, fail nếu có console error; screenshots lưu vào `test-results/`.
-  Yêu cầu dev server đang chạy (`npm run dev`) và Google Chrome
-  (đổi đường dẫn bằng env `CHROME_PATH` nếu cần).
+- `npm run typecheck` — TypeScript check
+- `npm run test:logic` — end-to-end store logic with real crypto across scenarios (no browser)
+- `npm run test:ui` — headless Chrome clicks through the demo; fails on console errors; screenshots land in `test-results/`. Requires `npm run dev` and Google Chrome (`CHROME_PATH` to override)
 
-## Ngoài phạm vi (đúng theo plan)
+## Out of scope (by design)
 
-Không mã hóa file thật, không gửi email, không passkey production (nút
-"Verify with Passkey" là mô phỏng), không Nitro Enclave, không auth thật.
+No real file encryption, no outbound email, no production passkeys (“Verify with Passkey” is simulated), no Nitro Enclaves, and no real authentication.
