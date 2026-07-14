@@ -1,0 +1,14 @@
+# Render Blueprint — https://render.com/docs/blueprint-spec
+# Deploy: Dashboard → New → Blueprint → connect repo (or use "Apply" from repo with this file)
+
+services:
+  - type: web
+    name: tracelium-recovery-demo
+    runtime: static
+    buildCommand: npm install && npm run build
+    staticPublishPath: ./dist
+    routes:
+      # React Router (BrowserRouter) — all paths serve index.html
+      - type: rewrite
+        source: /*
+        destination: /index.html

@@ -19,6 +19,36 @@ No backend is required — everything runs in the browser. All key material is g
 
 Live secrets exist only in `src/services/vault.ts` (in-memory). UI state (Zustand) holds fingerprints and version labels only — never raw keys, shares, or secrets.
 
+## Deploy to Render
+
+This app is a **static SPA** (no backend). Use a [Render Static Site](https://render.com/docs/static-sites).
+
+### Option A — Blueprint (recommended)
+
+1. Push this repo to GitHub, GitLab, or Bitbucket.
+2. In Render: **New → Blueprint** → connect the repo.
+3. Render reads `render.yaml` at the repo root and provisions the site.
+
+### Option B — Manual setup
+
+1. **New → Static Site** → connect the repo.
+2. Set **Build Command** to `npm install && npm run build` and **Publish Directory** to `dist`.
+3. Add a **Rewrite** rule (required for React Router):
+   - Source: `/*`
+   - Destination: `/index.html`
+   - Action: **Rewrite**
+
+Without the rewrite, direct URLs such as `/members` or `/policy` return 404 on refresh.
+
+No environment variables are required. On the free tier, the site may sleep after idle; the first visit can be slow. Add a custom domain under **Settings → Custom Domains** if needed.
+
+Verify locally before deploying:
+
+```bash
+npm run build
+npm run preview   # http://localhost:4173
+```
+
 ## Main demos (Members / Demo Mode)
 
 | Demo | What happens | What the Crypto Trace proves |
