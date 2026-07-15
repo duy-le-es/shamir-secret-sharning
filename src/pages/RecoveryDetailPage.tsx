@@ -4,7 +4,6 @@ import { NoticeBanner, RiskWarning } from '../components/Banners'
 import { Pill, RequestStatusPill } from '../components/Pills'
 import { QuorumProgress } from '../components/QuorumProgress'
 import { RecoveryTimeline } from '../components/RecoveryTimeline'
-import { vault } from '../services/vault'
 import { useAppStore, userKeyLabel } from '../store/store'
 import { fmtDateTime } from '../utils/format'
 import { canViewRequest } from '../utils/requestVisibility'
@@ -52,17 +51,15 @@ export function RecoveryDetailPage() {
   const rejectRequest = useAppStore((s) => s.rejectRequest)
   const beginBreakGlassRecovery = useAppStore((s) => s.beginBreakGlassRecovery)
   const beginEmergencyRecovery = useAppStore((s) => s.beginEmergencyRecovery)
-  const confirmPersonalRecoveryCode = useAppStore((s) => s.confirmPersonalRecoveryCode)
+  const openRecoveryEmailLink = useAppStore((s) => s.openRecoveryEmailLink)
   const setNewPasswordAfterRecovery = useAppStore((s) => s.setNewPasswordAfterRecovery)
 
   const [passkeyVerified, setPasskeyVerified] = useState(false)
-  const [recoveryCode, setRecoveryCode] = useState('')
   const [newPassword, setNewPassword] = useState('')
   const [confirmPassword, setConfirmPassword] = useState('')
 
   useEffect(() => {
     setPasskeyVerified(false)
-    setRecoveryCode('')
     setNewPassword('')
     setConfirmPassword('')
   }, [currentUserId, id])
@@ -106,17 +103,12 @@ export function RecoveryDetailPage() {
     request.status === 'RECOVERY_IN_PROGRESS' ||
     request.status === 'COMPLETED' ||
     request.status === 'FAILED' ||
-    request.status === 'AWAITING_USER_CONFIRMATION' ||
+    request.status === 'AWAITING_EMAIL_LINK' ||
     request.status === 'AWAITING_NEW_PASSWORD' ||
     request.steps.some((s) => s.state !== 'pending')
 
-  const demoDeliveryCode =
-    isSelfRecoveryRequest && request.status === 'AWAITING_USER_CONFIRMATION'
-      ? vault.pendingPersonalRecoveryCodes.get(request.id)
-      : undefined
-
-  const submitRecoveryCode = () => {
-    void confirmPersonalRecoveryCode(request.id, recoveryCode)
+  const openEmailLink = () => {
+    void openRecoveryEmailLink(request.id)
   }
 
   const submitPassword = () => {
@@ -137,7 +129,7 @@ export function RecoveryDetailPage() {
         <div className="subtitle">
           {isEmergency
             ? isSelfRecoveryRequest
-              ? 'Emergency recovery — password, Personal Recovery Code, and all devices lost'
+              ? 'Emergency recovery — password and all devices lost'
               : 'Shamir emergency recovery with envelope unwrap'
             : isSelfRecoveryRequest
               ? 'Your account recovery request — waiting for recovery party approvals'
@@ -173,7 +165,7 @@ export function RecoveryDetailPage() {
           {isEmergency && (
             <>
               <dt>Lost credentials</dt>
-              <dd>Password · Personal Recovery Code · all authorised devices</dd>
+              <dd>Password · all authorised devices</dd>
               <dt>Recovery scope</dt>
               <dd>Recover existing Vault Key (no data re-encryption)</dd>
             </>
@@ -220,8 +212,9 @@ export function RecoveryDetailPage() {
             <>
               <p className="card-sub" style={{ marginTop: 0 }}>
                 Approving authorizes recovery custodians to release their Shamir shares.
-                The server will reconstruct Recovery Secret RS-vN, decrypt the existing Vault Key,
-                and re-wrap it with a new Personal Recovery Code — not issue a new Vault Key.
+                The recovery session will reconstruct Recovery Secret RS-vN, restore the existing
+                Vault Key, seal it with a time-limited hash key for temporary server storage, and
+                email the user a one-time link — not issue a new Vault Key.
               </p>
               <div className="btn-row">
                 <button className="btn danger" onClick={() => rejectRequest(request.id)}>
@@ -381,37 +374,27 @@ export function RecoveryDetailPage() {
         </div>
       )}
 
-      {/* ---------- user confirms new Personal Recovery Code ---------- */}
-      {isEmergency && request.status === 'AWAITING_USER_CONFIRMATION' && isSelfRecoveryRequest && (
+      {/* ---------- user opens the one-time recovery email link ---------- */}
+      {isEmergency && request.status === 'AWAITING_EMAIL_LINK' && isSelfRecoveryRequest && (
         <div className="card">
-          <h2>Confirm your new Personal Recovery Code</h2>
+          <h2>Open your recovery email</h2>
           <p className="card-sub" style={{ marginTop: 0 }}>
-            A new Personal Recovery Code was sent through the approved recovery channel.
-            Enter it below to verify you received it. The client derives a Personal Recovery KEK,
-            downloads the Personal Recovery Envelope, and unwraps the same User Recovery DEK.
+            A one-time recovery link was sent to{' '}
+            <strong>{request.recoveryEmailSentTo ?? affected.email}</strong>. The link carries a
+            time-limited hash key. Opening it decrypts your Vault Key from temporary server
+            storage so you can set a new password.
           </p>
-          {demoDeliveryCode && (
-            <RiskWarning tone="info" title="Demo: recovery channel delivery">
-              In production this arrives out-of-band. For the demo, your new code is:{' '}
-              <span className="mono" style={{ wordBreak: 'break-word' }}>{demoDeliveryCode}</span>
+          {request.hashKeyExpiresAt && (
+            <RiskWarning tone="warning" title="Time-limited link">
+              This link expires at {fmtDateTime(request.hashKeyExpiresAt)}. After that the
+              temporary Vault Key storage is deleted and a new recovery request is required.
             </RiskWarning>
           )}
-          <label className="field">
-            <span>New Personal Recovery Code (12 words)</span>
-            <textarea
-              className="input"
-              rows={2}
-              value={recoveryCode}
-              onChange={(e) => setRecoveryCode(e.target.value)}
-              placeholder="Enter the 12-word phrase…"
-            />
-          </label>
-          <button
-            className="btn primary"
-            disabled={!recoveryCode.trim()}
-            onClick={submitRecoveryCode}
-          >
-            Confirm Personal Recovery Code
+          <RiskWarning tone="info" title="Demo: email delivery">
+            In production this link arrives in your inbox. For the demo, open it here.
+          </RiskWarning>
+          <button className="btn primary" onClick={openEmailLink}>
+            Open One-Time Recovery Link
           </button>
         </div>
       )}
@@ -421,8 +404,9 @@ export function RecoveryDetailPage() {
         <div className="card">
           <h2>Create a new password</h2>
           <p className="card-sub" style={{ marginTop: 0 }}>
-            Derive a new Password KEK from your password and wrap the same User Recovery DEK
-            into a new Password Envelope stored on the server.
+            The hash key from your one-time link decrypted the same Vault Key. Derive a new
+            Password KEK from your password and wrap that Vault Key into a new Password
+            Envelope stored on the server. The temporary storage is then deleted.
           </p>
           <label className="field">
             <span>New password</span>

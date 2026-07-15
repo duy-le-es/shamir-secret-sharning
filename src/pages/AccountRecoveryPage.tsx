@@ -6,7 +6,7 @@ import { useAppStore, userKeyLabel } from '../store/store'
 import { fmtDateTime } from '../utils/format'
 
 const REASONS = [
-  'Lost password, Personal Recovery Code, and all devices',
+  'Lost password and all devices',
   'Lost device only',
   'Private key unavailable',
   'Suspected key compromise',
@@ -36,7 +36,7 @@ export function AccountRecoveryPage() {
       r.status === 'PENDING_APPROVAL' ||
       r.status === 'QUORUM_REACHED' ||
       r.status === 'RECOVERY_IN_PROGRESS' ||
-      r.status === 'AWAITING_USER_CONFIRMATION' ||
+      r.status === 'AWAITING_EMAIL_LINK' ||
       r.status === 'AWAITING_NEW_PASSWORD',
   )
   const activeParties = policy.parties.filter((p) => p.status === 'ACTIVE')
@@ -72,9 +72,9 @@ export function AccountRecoveryPage() {
         <div className="crumbs">Workspace</div>
         <h1>Emergency Account Recovery</h1>
         <div className="subtitle">
-          Use this when you have lost your password, Personal Recovery Code, and all authorised
-          devices. Recovery custodians provide Shamir shares to reconstruct Recovery Secret RS-vN
-          and recover your Vault Key.
+          Use this when you have lost your password and all authorised devices. Recovery
+          custodians provide Shamir shares to reconstruct Recovery Secret RS-vN and restore
+          your Vault Key, then a one-time email link lets you finish recovery.
         </div>
       </div>
 
@@ -86,9 +86,9 @@ export function AccountRecoveryPage() {
           <li>Submit an Emergency Recovery Request</li>
           <li>Workspace Owner approves</li>
           <li>Recovery custodians authenticate and release Shamir shares ({policy.threshold}-of-{activeParties.length})</li>
-          <li>Reconstruct Recovery Secret RS-vN → decrypt Vault Key</li>
-          <li>Recover your existing Vault Key (no data re-encryption)</li>
-          <li>Receive new Personal Recovery Code → confirm → set new password</li>
+          <li>Reconstruct Recovery Secret RS-vN → restore your existing Vault Key (no data re-encryption)</li>
+          <li>Vault Key sealed with a time-limited hash key → temporary server storage</li>
+          <li>Receive recovery email → open one-time link → set new password → hash key decrypts your Vault Key</li>
         </ol>
       </div>
 
@@ -107,8 +107,8 @@ export function AccountRecoveryPage() {
       {openRequest ? (
         <div className="card">
           <h2>
-            {openRequest.status === 'AWAITING_USER_CONFIRMATION'
-              ? 'Confirm Personal Recovery Code'
+            {openRequest.status === 'AWAITING_EMAIL_LINK'
+              ? 'Open your recovery email'
               : openRequest.status === 'AWAITING_NEW_PASSWORD'
                 ? 'Set a new password'
                 : 'Recovery in progress'}
@@ -127,16 +127,16 @@ export function AccountRecoveryPage() {
               {openRequest.requiredApprovals}
             </p>
           )}
-          {openRequest.status === 'AWAITING_USER_CONFIRMATION' && (
+          {openRequest.status === 'AWAITING_EMAIL_LINK' && (
             <RiskWarning tone="info">
-              Custodians finished the recovery session. Enter the new Personal Recovery Code,
-              then set a password — your key status returns to <strong>Active</strong>.
+              Custodians finished the recovery session. A one-time recovery link was emailed to
+              you — open it, then set a password. Your key status returns to <strong>Active</strong>.
             </RiskWarning>
           )}
           {openRequest.status === 'AWAITING_NEW_PASSWORD' && (
             <RiskWarning tone="info">
-              Personal Recovery Code confirmed. Create a new password to finish and mark your
-              key Active.
+              One-time link verified — the hash key decrypted your Vault Key. Create a new
+              password to finish and mark your key Active.
             </RiskWarning>
           )}
           <div className="btn-row">
@@ -144,8 +144,8 @@ export function AccountRecoveryPage() {
               className="btn primary"
               onClick={() => navigate(`/account-recovery/${openRequest.id}`)}
             >
-              {openRequest.status === 'AWAITING_USER_CONFIRMATION'
-                ? 'Enter Personal Recovery Code'
+              {openRequest.status === 'AWAITING_EMAIL_LINK'
+                ? 'Open recovery email link'
                 : openRequest.status === 'AWAITING_NEW_PASSWORD'
                   ? 'Set new password'
                   : 'View recovery status'}
@@ -154,11 +154,11 @@ export function AccountRecoveryPage() {
         </div>
       ) : me.keyStatus === 'ACTIVE' && flowStep === 'idle' ? (
         <div className="card">
-          <h2>Lost password, Personal Recovery Code, and all devices?</h2>
+          <h2>Lost your password and all devices?</h2>
           <p className="card-sub" style={{ marginTop: 0 }}>
-            This emergency path is for when you cannot use your password, Personal Recovery
-            Code, or any authorised device. Reporting lost access is recorded in the audit log
-            before any recovery request is created.
+            This emergency path is for when you cannot use your password or any authorised
+            device. Reporting lost access is recorded in the audit log before any recovery
+            request is created.
           </p>
           <button className="btn danger" onClick={reportLoss}>
             I&apos;ve lost access to my account
@@ -215,7 +215,8 @@ export function AccountRecoveryPage() {
         <h2>Your recovery history</h2>
         <p className="card-sub" style={{ marginTop: 0 }}>
           Every step — access loss report, owner approval, custodian quorum, envelope unwrap,
-          Personal Recovery confirmation, and password envelope — is recorded in the Audit Log.
+          temporary Vault Key storage, recovery email, and password envelope — is recorded in
+          the Audit Log.
         </p>
         {myRequests.length === 0 ? (
           <div className="empty">No recovery requests yet.</div>

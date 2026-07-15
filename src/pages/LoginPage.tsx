@@ -17,7 +17,7 @@ export function LoginPage() {
     ? requests.find(
         (r) =>
           r.affectedUserId === demo.id &&
-          (r.status === 'AWAITING_USER_CONFIRMATION' || r.status === 'AWAITING_NEW_PASSWORD'),
+          (r.status === 'AWAITING_EMAIL_LINK' || r.status === 'AWAITING_NEW_PASSWORD'),
       )
     : undefined
 
@@ -52,8 +52,8 @@ export function LoginPage() {
         <p className="login-sub">Workspace: {workspaceName}</p>
         {pendingUserStep && (
           <p className="login-hint" style={{ marginTop: 0, color: 'var(--ink)' }}>
-            Recovery is waiting — after sign-in you will confirm your Personal Recovery Code
-            and set a new password.
+            Recovery is waiting — after sign-in, open the one-time recovery link from your
+            email and set a new password.
           </p>
         )}
         <label className="field">

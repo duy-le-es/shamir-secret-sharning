@@ -101,7 +101,7 @@ export type RequestStatus =
   | 'PENDING_APPROVAL'
   | 'QUORUM_REACHED'
   | 'RECOVERY_IN_PROGRESS'
-  | 'AWAITING_USER_CONFIRMATION'
+  | 'AWAITING_EMAIL_LINK'
   | 'AWAITING_NEW_PASSWORD'
   | 'COMPLETED'
   | 'REJECTED'
@@ -143,8 +143,10 @@ export interface RecoveryRequest {
   ownerApprovedAt?: string
   /** Recovered DEK fingerprint — proves same DEK, not a re-issue */
   recoveredDekFingerprint?: string
-  /** Demo: new Personal Recovery Code awaiting user confirmation */
-  pendingPersonalRecoveryPreview?: string
+  /** Emergency recovery: address the one-time recovery email was sent to */
+  recoveryEmailSentTo?: string
+  /** Emergency recovery: temporary hash key / one-time link expiry */
+  hashKeyExpiresAt?: string
   resultSummary?: {
     oldKey: string
     newKey: string
@@ -192,9 +194,12 @@ export const AUDIT_EVENT_TYPES = [
   'Emergency recovery owner approved',
   'Vault Key recovered',
   'User Recovery DEK recovered',
-  'Personal Recovery Envelope re-wrapped',
+  'Temporary hash key created',
+  'Vault Key stored temporarily',
+  'Recovery email sent',
+  'Recovery link opened',
+  'Temporary Vault Key storage deleted',
   'Password Envelope re-wrapped',
-  'Personal Recovery confirmed',
   'Reshare proposal created',
   'Reshare approved',
   'Reshare rejected',

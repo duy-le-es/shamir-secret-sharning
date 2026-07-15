@@ -6,7 +6,7 @@ import { ROLE_LABEL } from '../models/types'
 import { useAppStore, userKeyLabel, firstName } from '../store/store'
 
 const USER_ACTION_STATUSES = [
-  'AWAITING_USER_CONFIRMATION',
+  'AWAITING_EMAIL_LINK',
   'AWAITING_NEW_PASSWORD',
 ] as const
 
@@ -15,7 +15,7 @@ const OPEN_RECOVERY_STATUSES = [
   'PENDING_APPROVAL',
   'QUORUM_REACHED',
   'RECOVERY_IN_PROGRESS',
-  'AWAITING_USER_CONFIRMATION',
+  'AWAITING_EMAIL_LINK',
   'AWAITING_NEW_PASSWORD',
 ] as const
 
@@ -48,7 +48,7 @@ export function MembersPage() {
     setNotice({
       tone: 'info',
       text: needsUserAction
-        ? 'Sign in as Demo User to confirm the Personal Recovery Code and set a new password (status becomes Active).'
+        ? 'Sign in as Demo User to open the one-time recovery link and set a new password (status becomes Active).'
         : 'Sign in as Demo User to follow the recovery request.',
     })
     setRole(userId)
@@ -153,7 +153,7 @@ export function MembersPage() {
                 <dt>Recovery</dt>
                 <dd>
                   {openRequestFor(selected.id)
-                    ? `Open request ${openRequestFor(selected.id)!.id} — Demo User must confirm Personal Recovery Code then set a new password to become Active again.`
+                    ? `Open request ${openRequestFor(selected.id)!.id} — Demo User must open the one-time recovery link then set a new password to become Active again.`
                     : 'Key marked Lost — submit recovery from Account Recovery when signed in as Demo User.'}
                 </dd>
               </>

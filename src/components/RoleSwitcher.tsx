@@ -12,7 +12,7 @@ function demoFinishRecoveryPath(
   const pending = requests.find(
     (r) =>
       r.affectedUserId === userId &&
-      (r.status === 'AWAITING_USER_CONFIRMATION' || r.status === 'AWAITING_NEW_PASSWORD'),
+      (r.status === 'AWAITING_EMAIL_LINK' || r.status === 'AWAITING_NEW_PASSWORD'),
   )
   return pending ? `/account-recovery/${pending.id}` : null
 }

@@ -7,7 +7,6 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import forge from 'node-forge'
 import { createRandomKey } from '../src/services/crypto.service'
-import { createBackupKey } from '../src/helpers/encryption'
 import type { UserKeysFile } from '../src/data/user-keys'
 
 const { pki } = forge
@@ -49,11 +48,9 @@ async function main() {
       ? { publicKey: prior.publicKey, privateKey: prior.privateKey }
       : await generateKeyPair()
     const vaultKey = prior?.vaultKey ?? createRandomKey(256)
-    const personalRecoveryKey = prior?.personalRecoveryKey ?? createBackupKey()
-    users[user.id] = { ...user, ...keys, vaultKey, personalRecoveryKey }
+    users[user.id] = { ...user, ...keys, vaultKey }
     const dekAction = prior?.vaultKey ? 'kept' : 'generated'
-    const personalAction = prior?.personalRecoveryKey ? 'kept' : 'generated'
-    console.log(`${dekAction} recovery DEK, ${personalAction} personal recovery for ${user.name} (${user.id})`)
+    console.log(`${dekAction} recovery DEK for ${user.name} (${user.id})`)
   }
 
   const payload: UserKeysFile = {

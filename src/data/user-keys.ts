@@ -8,8 +8,6 @@ export interface UserKeySeed {
   privateKey: string
   /** Vault key — 256-bit random key (64-char hex) */
   vaultKey: string
-  /** Personal Recovery — 12-word backup phrase (offline) */
-  personalRecoveryKey: string
   /** Demo password used to create the initial Password Envelope at bootstrap */
   demoPassword?: string
 }

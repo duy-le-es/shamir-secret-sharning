@@ -54,11 +54,11 @@ const KEY_INVENTORY: Array<{
       serverSees: 'Never',
     },
     {
-      key: 'Personal Recovery (per user, 12 words)',
-      createdWhen: 'Account creation · re-issued at every key reset / recovery',
-      createdWhere: "User's device (random-words, client-side)",
-      storedWhere: 'Kept offline by the user',
-      serverSees: 'Verifier hash only, never the plaintext',
+      key: 'Temporary Hash Key (per recovery, time-limited)',
+      createdWhen: 'Emergency recovery only, after the Vault Key is restored',
+      createdWhere: 'Recovery session (SHA-256 of a random session token)',
+      storedWhere: 'Only inside the one-time email link — invalidated after use or expiry',
+      serverSees: 'Only the hash-key-encrypted Vault Key, held temporarily',
     },
     {
       key: 'Recovery Code (per user)',
@@ -75,7 +75,6 @@ const LIFECYCLE: Array<{ moment: string; created: string[] }> = [
     created: [
       'User Identity key pair UK-x-v1 — generated on the user’s device',
       'User Recovery DEK — 256-bit random key, client-side',
-      'Personal Recovery — 12-word phrase, shown once and kept offline',
       'Recovery Code — shown once to the user, kept offline',
     ],
   },
@@ -96,6 +95,13 @@ const LIFECYCLE: Array<{ moment: string; created: string[] }> = [
     created: [
       'Temporary reconstructed secret — memory only, destroyed after use',
       'New owner key pair — old owner key revoked',
+    ],
+  },
+  {
+    moment: '5 · Emergency recovery (quorum of custodians)',
+    created: [
+      'Temporary hash key — time-limited, delivered only inside the one-time email link',
+      'Hash-key-encrypted Vault Key — temporary server storage, deleted after the user sets a new password',
     ],
   },
 ]
@@ -141,11 +147,6 @@ export function KeyArchitecturePage() {
                     Recovery DEK · {vault.vaultKeys.get(u.id)!.slice(0, 12)}…
                   </span>
                 )}
-                {vault.personalRecoveryKeys.has(u.id) && (
-                  <span className="artifact-note" style={{ display: 'block', marginTop: 4 }}>
-                    Personal Recovery · {vault.personalRecoveryKeys.get(u.id)!.split(' ').slice(0, 3).join(' ')} …
-                  </span>
-                )}
               </div>
             ))}
           </div>
@@ -162,10 +163,20 @@ export function KeyArchitecturePage() {
                 )}
               </span>
             </div>
+            {vault.tempVaultKeyEnvelopes.size > 0 && (
+              <div className="artifact">
+                <span className="key-badge">Temporary Vault Key storage</span>
+                <span className="artifact-note">
+                  <Pill tone="blue">
+                    {vault.tempVaultKeyEnvelopes.size} hash-key-encrypted Vault Key(s) — deleted after recovery
+                  </Pill>
+                </span>
+              </div>
+            )}
             <div className="artifact">
               <span className="artifact-note">
                 <strong>NOT stored:</strong> user private keys · Recovery Secret · share
-                values · Recovery Codes
+                values · Recovery Codes · plaintext hash keys
               </span>
             </div>
           </div>

@@ -34,11 +34,11 @@ export function App() {
   const needsLogin = useAppStore((s) => {
     const viewer = s.users.find((u) => u.id === s.currentUserId)
     if (!viewer || viewer.role !== 'DEMO_USER' || s.demoAuthenticated) return false
-    // Recovery finish steps skip the login wall — go straight to Confirm PRC / new password
+    // Recovery finish steps skip the login wall — go straight to the email link / new password
     const finishing = s.requests.some(
       (r) =>
         r.affectedUserId === viewer.id &&
-        (r.status === 'AWAITING_USER_CONFIRMATION' || r.status === 'AWAITING_NEW_PASSWORD'),
+        (r.status === 'AWAITING_EMAIL_LINK' || r.status === 'AWAITING_NEW_PASSWORD'),
     )
     return !finishing
   })
@@ -84,7 +84,7 @@ export function App() {
             r.status === 'PENDING_APPROVAL' ||
             r.status === 'QUORUM_REACHED' ||
             r.status === 'RECOVERY_IN_PROGRESS' ||
-            r.status === 'AWAITING_USER_CONFIRMATION' ||
+            r.status === 'AWAITING_EMAIL_LINK' ||
             r.status === 'AWAITING_NEW_PASSWORD'),
       ).length
       : 0,

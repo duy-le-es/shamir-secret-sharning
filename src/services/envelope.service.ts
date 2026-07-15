@@ -1,5 +1,5 @@
-// AES-GCM envelopes for User Recovery DEK — Personal Recovery, Password, and
-// Emergency Recovery paths. Server stores ciphertext only; KEKs never leave the client.
+// AES-GCM envelopes for User Recovery DEK — Password, Emergency Recovery, and
+// temporary hash-key paths. Server stores ciphertext only; KEKs never leave the client.
 import { hexPreview, sha256hex, toHex } from './crypto.service'
 import { trace } from './trace'
 
@@ -16,10 +16,6 @@ function hexToBytes(hex: string): Uint8Array {
   const out = new Uint8Array(hex.length / 2)
   for (let i = 0; i < out.length; i++) out[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16)
   return out
-}
-
-function normalizePhrase(phrase: string): string {
-  return phrase.normalize('NFKD').trim().toLowerCase().replace(/\s+/g, ' ')
 }
 
 async function deriveAesKey(
@@ -56,13 +52,6 @@ async function deriveAesKey(
     ])
   }
   return key
-}
-
-export async function derivePersonalRecoveryKek(
-  personalRecoveryCode: string,
-  salt: Uint8Array,
-): Promise<CryptoKey> {
-  return deriveAesKey(normalizePhrase(personalRecoveryCode), salt, 'Personal Recovery KEK', false)
 }
 
 export async function derivePasswordKek(password: string, salt: Uint8Array): Promise<CryptoKey> {
@@ -137,20 +126,19 @@ export async function unwrapDekWithKek(
   return toHex(plain)
 }
 
-export async function createPersonalRecoveryEnvelope(
+/** Seal the restored Vault Key with the time-limited hash key for temporary server storage. */
+export async function createTempHashKeyEnvelope(
   dekHex: string,
-  personalRecoveryCode: string,
+  hashKeyHex: string,
   userLabel: string,
-  log = false,
 ): Promise<EnvelopeBlob> {
-  const salt = crypto.getRandomValues(new Uint8Array(16))
-  const kek = await derivePersonalRecoveryKek(personalRecoveryCode, salt)
+  const kek = await importRawAesKey(hexToBytes(hashKeyHex))
   const { iv, ciphertext } = await wrapDekWithKek(
     dekHex,
     kek,
-    log ? `Vault Key encrypted with New Personal Recovery Code — ${userLabel}` : undefined,
+    `Vault Key encrypted with temporary hash key — ${userLabel}`,
   )
-  return { salt: toHex(salt), iv: toHex(iv), ciphertext: toHex(ciphertext), version: 1 }
+  return { salt: '', iv: toHex(iv), ciphertext: toHex(ciphertext), version: 1 }
 }
 
 export async function createPasswordEnvelope(
@@ -174,16 +162,17 @@ export async function createEmergencyRecoveryEnvelope(
   return { salt: '', iv: toHex(iv), ciphertext: toHex(ciphertext), version: 1 }
 }
 
-export async function unwrapPersonalRecoveryEnvelope(
+/** Open the temporarily stored Vault Key using the hash key from the one-time email link. */
+export async function unwrapTempHashKeyEnvelope(
   envelope: EnvelopeBlob,
-  personalRecoveryCode: string,
+  hashKeyHex: string,
   userLabel: string,
 ): Promise<string> {
-  const kek = await derivePersonalRecoveryKek(personalRecoveryCode, hexToBytes(envelope.salt))
+  const kek = await importRawAesKey(hexToBytes(hashKeyHex))
   return unwrapDekWithKek(
     envelope,
     kek,
-    `Personal Recovery Envelope opened — ${userLabel}`,
+    `Temporary Vault Key storage opened with hash key — ${userLabel}`,
   )
 }
 

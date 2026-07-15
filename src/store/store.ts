@@ -14,7 +14,6 @@ import type {
 } from '../models/types'
 import userKeysSeed from '../data/user-keys.json'
 import type { UserKeysFile } from '../data/user-keys'
-import { createBackupKey } from '../helpers/encryption'
 import {
   createRandomKey,
   fingerprintPublicKey,
@@ -30,9 +29,9 @@ import { encryptKeyWithPublicKey } from '../utils/crypto.helper'
 import {
   createEmergencyRecoveryEnvelope,
   createPasswordEnvelope,
-  createPersonalRecoveryEnvelope,
+  createTempHashKeyEnvelope,
   unwrapEmergencyRecoveryEnvelope,
-  unwrapPersonalRecoveryEnvelope,
+  unwrapTempHashKeyEnvelope,
 } from '../services/envelope.service'
 import { combineShares, splitSecret } from '../services/shamir.service'
 import { resetVault, vault } from '../services/vault'
@@ -98,7 +97,7 @@ interface AppState {
   rejectRequest: (requestId: string) => void
   beginBreakGlassRecovery: (requestId: string) => Promise<void>
   beginEmergencyRecovery: (requestId: string) => Promise<void>
-  confirmPersonalRecoveryCode: (requestId: string, code: string) => Promise<boolean>
+  openRecoveryEmailLink: (requestId: string) => Promise<boolean>
   setNewPasswordAfterRecovery: (requestId: string, password: string) => Promise<boolean>
 
   // guided demo buttons
@@ -130,7 +129,6 @@ const USER_RESET_STEPS = [
   'Old user sessions revoked',
   'Old user key marked as revoked',
   'New user key generated',
-  'New Personal Recovery issued',
   'Audit event recorded',
 ]
 
@@ -150,13 +148,13 @@ const emergencyRecoverySteps = (secretVersion: number): string[] => {
     'Validate custodian signatures',
     'Load approved Shamir shares',
     `Reconstruct Recovery Secret ${rs}`,
-    `Decrypt Vault Key with Recovery Secret ${rs}`,
-    'Verify recovered Vault Key',
-    'Generate new Personal Recovery Code',
-    'Encrypt Vault Key with New Personal Recovery Code',
-    'Store Personal Recovery Envelope on server',
-    'Send new code via recovery channel',
-    `Destroy temporary Recovery Secret ${rs}`,
+    `Restore Vault Key with Recovery Secret ${rs}`,
+    'Verify restored Vault Key',
+    'Create temporary hash key (time-limited)',
+    'Encrypt Vault Key with hash key — temporary server storage',
+    `Clear recovery session material (${rs})`,
+    'Record audit events',
+    'Send recovery email with one-time link',
   ]
 }
 
@@ -165,9 +163,12 @@ const OPEN_REQUEST_STATUSES = [
   'PENDING_APPROVAL',
   'QUORUM_REACHED',
   'RECOVERY_IN_PROGRESS',
-  'AWAITING_USER_CONFIRMATION',
+  'AWAITING_EMAIL_LINK',
   'AWAITING_NEW_PASSWORD',
 ] as const
+
+/** Lifetime of the temporary hash key / one-time recovery link (demo: 15 minutes). */
+const HASH_KEY_TTL_MS = 15 * 60_000
 
 const freshSteps = (labels: string[]): RecoveryStep[] =>
   labels.map((label) => ({ label, state: 'pending' }))
@@ -272,7 +273,6 @@ export const useAppStore = create<AppState>((set, get) => {
     userId: string,
     userName: string,
     vaultKey: string,
-    personalRecoveryKey: string,
     demoPassword = DEMO_PASSWORD,
   ) => {
     const emergencyKey = randomSecret(32)
@@ -281,10 +281,6 @@ export const useAppStore = create<AppState>((set, get) => {
     vault.emergencyRecoveryEnvelopes.set(
       userId,
       await createEmergencyRecoveryEnvelope(vaultKey, emergencyKey, userName),
-    )
-    vault.personalRecoveryEnvelopes.set(
-      userId,
-      await createPersonalRecoveryEnvelope(vaultKey, personalRecoveryKey, userName),
     )
     vault.passwordEnvelopes.set(
       userId,
@@ -335,21 +331,11 @@ export const useAppStore = create<AppState>((set, get) => {
       if (!seed.vaultKey) {
         throw new Error(`Missing vaultKey for user "${def.id}" in user-keys.json`)
       }
-      if (!seed.personalRecoveryKey) {
-        throw new Error(`Missing Personal Recovery key for user "${def.id}" in user-keys.json`)
-      }
       const pair = await importUserKeyPairFromPem(seed.publicKey, seed.privateKey)
       vault.userKeys.set(def.id, pair)
       vault.vaultKeys.set(def.id, seed.vaultKey)
-      vault.personalRecoveryKeys.set(def.id, seed.personalRecoveryKey)
       trace('KEYGEN', `Vault Key — ${def.name}`, [seed.vaultKey])
-      await provisionUserEnvelopes(
-        def.id,
-        def.name,
-        seed.vaultKey,
-        seed.personalRecoveryKey,
-        seed.demoPassword,
-      )
+      await provisionUserEnvelopes(def.id, def.name, seed.vaultKey, seed.demoPassword)
       users.push({
         ...def,
         keyVersion: 1,
@@ -605,14 +591,9 @@ export const useAppStore = create<AppState>((set, get) => {
         vault.userKeys.set(affected.id, pair)
         const vaultKey = createRandomKey(256)
         vault.vaultKeys.set(affected.id, vaultKey)
-        const personalRecoveryKey = createBackupKey()
-        vault.personalRecoveryKeys.set(affected.id, personalRecoveryKey)
         newFingerprint = await fingerprintPublicKey(pair.publicKey)
         trace('KEYGEN', `User Recovery DEK re-issued — ${affected.name}`, [
           `new 256-bit DEK (hex): ${vaultKey}`,
-        ])
-        trace('KEYGEN', `Personal Recovery re-issued — ${affected.name}`, [
-          `new 12-word phrase: ${personalRecoveryKey}`,
         ])
         return `UK-${firstName(affected)}-v${affected.keyVersion + 1} created client-side`
       })
@@ -801,57 +782,57 @@ export const useAppStore = create<AppState>((set, get) => {
         return 'Same Vault Key recovered (not re-issued)'
       })
 
-      let newPersonalCode = ''
+      let hashKeyHex = ''
+      let hashKeyExpiresAt = ''
       await runStep(requestId, 5, 800, async () => {
-        newPersonalCode = createBackupKey()
-        vault.pendingPersonalRecoveryCodes.set(requestId, newPersonalCode)
-        trace('KEYGEN', `New Personal Recovery Code — ${affected.name}`, [
-          `12-word phrase: ${newPersonalCode}`,
+        const sessionToken = randomSecret(32)
+        hashKeyHex = await sha256hex(sessionToken)
+        wipe(sessionToken)
+        hashKeyExpiresAt = new Date(Date.now() + HASH_KEY_TTL_MS).toISOString()
+        vault.recoveryHashKeys.set(requestId, hashKeyHex)
+        patchRequest(requestId, { hashKeyExpiresAt })
+        trace('KEYGEN', `Temporary hash key created — ${affected.name}`, [
+          `hash key = SHA-256(random session token): ${hashKeyHex}`,
+          `time-limited: expires ${hashKeyExpiresAt}`,
+          'delivered only inside the one-time email link — never stored in plaintext on the server',
         ])
-        return 'New 12-word Personal Recovery Code generated'
-      })
-
-      await runStep(requestId, 6, 900, async () => {
-        const envelope = await createPersonalRecoveryEnvelope(
-          recoveredVaultKey,
-          newPersonalCode,
-          affected.name,
-          true,
-        )
-        vault.personalRecoveryEnvelopes.set(affected.id, envelope)
-        vault.personalRecoveryKeys.set(affected.id, newPersonalCode)
-        pushAudit('Personal Recovery Envelope re-wrapped', {
+        pushAudit('Temporary hash key created', {
           actorId: 'SYSTEM',
           requestId,
           target: affected.name,
+          metadata: { expiresAt: hashKeyExpiresAt },
+          result: 'INFO',
         })
-        return 'Vault Key encrypted with New Personal Recovery Code'
+        return 'Time-limited hash key derived for temporary Vault Key storage'
       })
 
-      await runStep(requestId, 7, 700, async () => {
-        const envelope = vault.personalRecoveryEnvelopes.get(affected.id)
-        trace('ENVELOPE', `Personal Recovery Envelope stored on server — ${affected.name}`, [
-          envelope?.ciphertext ?? '(missing)',
+      await runStep(requestId, 6, 900, async () => {
+        const envelope = await createTempHashKeyEnvelope(
+          recoveredVaultKey,
+          hashKeyHex,
+          affected.name,
+        )
+        vault.tempVaultKeyEnvelopes.set(requestId, envelope)
+        trace('ENVELOPE', `Encrypted Vault Key stored temporarily on server — ${affected.name}`, [
+          envelope.ciphertext,
+          `storage is temporary — deleted after recovery completes or the hash key expires`,
         ])
-        return 'Personal Recovery Envelope stored on server'
+        pushAudit('Vault Key stored temporarily', {
+          actorId: 'SYSTEM',
+          requestId,
+          target: affected.name,
+          metadata: { encryptedWith: 'temporary hash key', expiresAt: hashKeyExpiresAt },
+        })
+        return 'Restored Vault Key sealed with hash key — temporary server storage'
       })
 
-      await runStep(requestId, 8, 700, async () => {
-        const preview = newPersonalCode.split(' ').slice(0, 3).join(' ')
-        patchRequest(requestId, { pendingPersonalRecoveryPreview: `${preview} …` })
-        trace('INFO', `New Personal Recovery Code sent — ${affected.name}`, [
-          `recovery channel: approved out-of-band delivery (demo)`,
-          `code preview: ${preview} … (full code held for user confirmation)`,
-        ])
-        return `Code sent via recovery channel: ${preview} …`
-      })
-
-      await runStep(requestId, 9, 800, async () => {
+      await runStep(requestId, 7, 800, async () => {
         wipe(vault.tempEmergencyKey)
         vault.tempEmergencyKey = null
-        trace('WIPE', `Temporary Recovery Secret ${rsLabel} cleared`, [
+        trace('WIPE', `Recovery session material cleared (${rsLabel})`, [
           'plaintext Recovery Secret overwritten with zeros in volatile memory',
-          'only custodian shares and the encrypted Vault Key remain',
+          'custodian session shares destroyed',
+          'only the hash-key-encrypted Vault Key (temporary) remains server-side',
         ])
         patchRequest(requestId, { secretCleared: true })
         pushAudit('Recovery secret destroyed', {
@@ -860,25 +841,50 @@ export const useAppStore = create<AppState>((set, get) => {
           metadata: { type: rsLabel },
           result: 'INFO',
         })
-        return `Temporary Recovery Secret ${rsLabel} cleared`
+        return `Recovery session material cleared (${rsLabel})`
       })
 
-      patchRequest(requestId, { status: 'AWAITING_USER_CONFIRMATION' })
-      pushAudit('Recovery session completed', {
-        actorId,
-        requestId,
-        target: affected.name,
-        metadata: { phase: 'awaiting user confirmation' },
+      await runStep(requestId, 8, 600, async () => {
+        pushAudit('Recovery session completed', {
+          actorId,
+          requestId,
+          target: affected.name,
+          metadata: {
+            phase: 'temporary Vault Key stored — awaiting user via email link',
+            temporaryStorageExpiresAt: hashKeyExpiresAt,
+          },
+        })
+        return 'Recovery event and temporary Vault Key storage fully logged'
       })
+
+      await runStep(requestId, 9, 700, async () => {
+        patchRequest(requestId, { recoveryEmailSentTo: affected.email })
+        trace('INFO', `Recovery email sent — ${affected.name}`, [
+          `to: ${affected.email}`,
+          'one-time link contains the temporary hash key (never stored server-side in plaintext)',
+          'opening the link lets the user set a new password and decrypt the Vault Key',
+        ])
+        pushAudit('Recovery email sent', {
+          actorId: 'SYSTEM',
+          requestId,
+          target: affected.email,
+          metadata: { linkExpiresAt: hashKeyExpiresAt },
+        })
+        return `One-time recovery link sent to ${affected.email}`
+      })
+
+      patchRequest(requestId, { status: 'AWAITING_EMAIL_LINK' })
       set({
         notice: {
           tone: 'info',
-          text: `Emergency recovery session complete. ${affected.name} must confirm the new Personal Recovery Code, then set a new password.`,
+          text: `Emergency recovery session complete. A one-time recovery link was emailed to ${affected.email}. ${affected.name} must open it to set a new password and decrypt the Vault Key.`,
         },
       })
     } catch (err) {
       wipe(vault.tempEmergencyKey)
       vault.tempEmergencyKey = null
+      vault.recoveryHashKeys.delete(requestId)
+      vault.tempVaultKeyEnvelopes.delete(requestId)
       patchRequest(requestId, { status: 'FAILED', secretCleared: true })
       pushAudit('Recovery session completed', {
         actorId,
@@ -914,7 +920,7 @@ export const useAppStore = create<AppState>((set, get) => {
     notice: null,
 
     // Switching to Demo User normally requires login again — except when recovery is
-    // waiting for Confirm Personal Recovery Code / new password (skip login, go finish it).
+    // waiting for the one-time email link / new password (skip login, go finish it).
     setRole: (userId) => {
       const { users, requests } = get()
       const user = users.find((u) => u.id === userId)
@@ -923,7 +929,7 @@ export const useAppStore = create<AppState>((set, get) => {
         requests.some(
           (r) =>
             r.affectedUserId === userId &&
-            (r.status === 'AWAITING_USER_CONFIRMATION' || r.status === 'AWAITING_NEW_PASSWORD'),
+            (r.status === 'AWAITING_EMAIL_LINK' || r.status === 'AWAITING_NEW_PASSWORD'),
         )
       set({
         currentUserId: userId,
@@ -1773,14 +1779,9 @@ export const useAppStore = create<AppState>((set, get) => {
           vault.userKeys.set(affected.id, pair)
           const vaultKey = createRandomKey(256)
           vault.vaultKeys.set(affected.id, vaultKey)
-          const personalRecoveryKey = createBackupKey()
-          vault.personalRecoveryKeys.set(affected.id, personalRecoveryKey)
           newFingerprint = await fingerprintPublicKey(pair.publicKey)
           trace('KEYGEN', `User Recovery DEK re-issued — ${affected.name}`, [
             `new 256-bit DEK (hex): ${vaultKey}`,
-          ])
-          trace('KEYGEN', `Personal Recovery re-issued — ${affected.name}`, [
-            `new 12-word phrase: ${personalRecoveryKey}`,
           ])
           pushAudit('New user key generated', {
             actorId: 'SYSTEM',
@@ -1790,14 +1791,7 @@ export const useAppStore = create<AppState>((set, get) => {
           return `UK-${firstName(affected)}-v${affected.keyVersion + 1} created on user's trusted client`
         })
 
-        await runStep(requestId, 3, 800, async () => {
-          const phrase = vault.personalRecoveryKeys.get(affected.id)
-          return phrase
-            ? `Personal Recovery issued: ${phrase.split(' ').slice(0, 3).join(' ')} …`
-            : 'New Personal Recovery issued to user'
-        })
-        await runStep(requestId, 4, 700, async () => 'Delivered to user out-of-band')
-        await runStep(requestId, 5, 600)
+        await runStep(requestId, 3, 600)
 
         patchUser(affected.id, {
           keyVersion: affected.keyVersion + 1,
@@ -1968,38 +1962,47 @@ export const useAppStore = create<AppState>((set, get) => {
 
     beginEmergencyRecovery,
 
-    confirmPersonalRecoveryCode: async (requestId, code) => {
+    openRecoveryEmailLink: async (requestId) => {
       const { requests, users, currentUserId } = get()
       const req = requests.find((r) => r.id === requestId)
-      if (!req || req.type !== 'EMERGENCY_RECOVERY' || req.status !== 'AWAITING_USER_CONFIRMATION') {
+      if (!req || req.type !== 'EMERGENCY_RECOVERY' || req.status !== 'AWAITING_EMAIL_LINK') {
         return false
       }
       const affected = users.find((u) => u.id === req.affectedUserId)
       if (!affected) return false
       if (currentUserId !== affected.id) return false
 
-      const expected = vault.pendingPersonalRecoveryCodes.get(requestId)
-      if (!expected || normalizeRecoveryCode(code) !== normalizeRecoveryCode(expected)) {
+      if (req.hashKeyExpiresAt && Date.now() > new Date(req.hashKeyExpiresAt).getTime()) {
+        vault.recoveryHashKeys.delete(requestId)
+        vault.tempVaultKeyEnvelopes.delete(requestId)
+        patchRequest(requestId, { status: 'EXPIRED' })
+        pushAudit('Temporary Vault Key storage deleted', {
+          actorId: 'SYSTEM',
+          requestId,
+          metadata: { reason: 'one-time link expired' },
+          result: 'INFO',
+        })
         set({
           notice: {
             tone: 'danger',
-            text: 'Personal Recovery Code does not match. Check the code sent through your recovery channel.',
+            text: 'This one-time recovery link has expired. Submit a new emergency recovery request.',
           },
         })
         return false
       }
 
-      const envelope = vault.personalRecoveryEnvelopes.get(affected.id)
+      const hashKeyHex = vault.recoveryHashKeys.get(requestId)
+      const envelope = vault.tempVaultKeyEnvelopes.get(requestId)
       const originalDek = vault.vaultKeys.get(affected.id)
-      if (!envelope || !originalDek) return false
+      if (!hashKeyHex || !envelope || !originalDek) return false
 
       try {
-        const recovered = await unwrapPersonalRecoveryEnvelope(envelope, code, affected.name)
+        const recovered = await unwrapTempHashKeyEnvelope(envelope, hashKeyHex, affected.name)
         if (recovered !== originalDek) {
-          throw new Error('DEK mismatch after Personal Recovery unwrap')
+          throw new Error('Vault Key mismatch after hash key unwrap')
         }
         patchRequest(requestId, { status: 'AWAITING_NEW_PASSWORD' })
-        pushAudit('Personal Recovery confirmed', {
+        pushAudit('Recovery link opened', {
           actorId: currentUserId,
           requestId,
           target: affected.name,
@@ -2007,7 +2010,7 @@ export const useAppStore = create<AppState>((set, get) => {
         set({
           notice: {
             tone: 'success',
-            text: 'Personal Recovery Code confirmed. Set a new password to complete recovery.',
+            text: 'One-time link verified — the hash key decrypted your Vault Key. Set a new password to complete recovery.',
           },
         })
         return true
@@ -2015,7 +2018,7 @@ export const useAppStore = create<AppState>((set, get) => {
         set({
           notice: {
             tone: 'danger',
-            text: 'Could not verify Personal Recovery Code. The envelope unwrap failed.',
+            text: 'Could not open the recovery link. The hash key failed to decrypt the temporarily stored Vault Key.',
           },
         })
         return false
@@ -2053,7 +2056,19 @@ export const useAppStore = create<AppState>((set, get) => {
           target: affected.name,
         })
 
-        vault.pendingPersonalRecoveryCodes.delete(requestId)
+        // Temporary storage is one-time: destroy the hash key and sealed Vault Key.
+        vault.recoveryHashKeys.delete(requestId)
+        vault.tempVaultKeyEnvelopes.delete(requestId)
+        trace('WIPE', `Temporary Vault Key storage deleted — ${affected.name}`, [
+          'hash-key-encrypted Vault Key removed from server',
+          'temporary hash key invalidated — the one-time link no longer works',
+        ])
+        pushAudit('Temporary Vault Key storage deleted', {
+          actorId: 'SYSTEM',
+          requestId,
+          target: affected.name,
+          result: 'INFO',
+        })
         patchUser(affected.id, {
           keyStatus: 'ACTIVE',
           envelopeVersion: affected.envelopeVersion + 1,
@@ -2130,7 +2145,7 @@ export const useAppStore = create<AppState>((set, get) => {
         return
       }
       get().simulateKeyLoss(owner.id)
-      const id = get().createRequest('EMERGENCY_RECOVERY', owner.id, 'Lost password, Personal Recovery Code, and all devices')
+      const id = get().createRequest('EMERGENCY_RECOVERY', owner.id, 'Lost password and all devices')
       if (id) {
         set({
           notice: {
@@ -2142,10 +2157,6 @@ export const useAppStore = create<AppState>((set, get) => {
     },
   }
 })
-
-function normalizeRecoveryCode(code: string): string {
-  return code.normalize('NFKD').trim().toLowerCase().replace(/\s+/g, ' ')
-}
 
 let bootstrapped = false
 export function initDemo(): void {

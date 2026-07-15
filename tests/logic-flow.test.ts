@@ -84,20 +84,28 @@ async function main() {
   const dekBefore = vault.vaultKeys.get('alice')!
   await S().beginEmergencyRecovery(reqB.id)
   await waitFor(
-    () => S().requests.find((r) => r.id === reqB.id)!.status === 'AWAITING_USER_CONFIRMATION',
-    'emergency recovery session → awaiting user confirmation',
+    () => S().requests.find((r) => r.id === reqB.id)!.status === 'AWAITING_EMAIL_LINK',
+    'emergency recovery session → recovery email sent',
   )
-  const pendingCode = vault.pendingPersonalRecoveryCodes.get(reqB.id)!
-  assert(!!pendingCode, 'new Personal Recovery Code issued')
+  assert(!!vault.recoveryHashKeys.get(reqB.id), 'temporary hash key created')
+  assert(!!vault.tempVaultKeyEnvelopes.get(reqB.id), 'Vault Key stored temporarily (hash-key envelope)')
+  assert(
+    S().requests.find((r) => r.id === reqB.id)!.recoveryEmailSentTo === 'alice@acme.io',
+    'recovery email sent to affected user',
+  )
   S().setRole('alice')
-  const confirmed = await S().confirmPersonalRecoveryCode(reqB.id, pendingCode)
-  assert(confirmed, 'Personal Recovery Code confirmed')
+  const linkOpened = await S().openRecoveryEmailLink(reqB.id)
+  assert(linkOpened, 'one-time recovery link opened (hash key decrypted Vault Key)')
   assert(
     S().requests.find((r) => r.id === reqB.id)!.status === 'AWAITING_NEW_PASSWORD',
     'awaiting new password',
   )
   const passwordSet = await S().setNewPasswordAfterRecovery(reqB.id, 'new-secure-password')
   assert(passwordSet, 'Password Envelope stored')
+  assert(
+    !vault.recoveryHashKeys.has(reqB.id) && !vault.tempVaultKeyEnvelopes.has(reqB.id),
+    'temporary Vault Key storage and hash key deleted after completion',
+  )
   await waitFor(
     () => S().requests.find((r) => r.id === reqB.id)!.status === 'COMPLETED',
     'emergency recovery COMPLETED',
@@ -116,10 +124,13 @@ async function main() {
     'Quorum reached',
     'Recovery secret reconstructed',
     'Vault Key recovered',
-    'Personal Recovery Envelope re-wrapped',
+    'Temporary hash key created',
+    'Vault Key stored temporarily',
     'Recovery secret destroyed',
-    'Personal Recovery confirmed',
+    'Recovery email sent',
+    'Recovery link opened',
     'Password Envelope re-wrapped',
+    'Temporary Vault Key storage deleted',
     'Recovery session completed',
   ]) {
     assert(auditTypes.includes(t), `audit contains "${t}"`)
@@ -151,12 +162,11 @@ async function main() {
   assert(S().requests[0].status === 'QUORUM_REACHED', 'secondary identity + admin reach 2-of-2 quorum')
   await S().beginEmergencyRecovery(reqC.id)
   await waitFor(
-    () => S().requests.find((r) => r.id === reqC.id)!.status === 'AWAITING_USER_CONFIRMATION',
-    'hybrid emergency recovery → awaiting user confirmation',
+    () => S().requests.find((r) => r.id === reqC.id)!.status === 'AWAITING_EMAIL_LINK',
+    'hybrid emergency recovery → recovery email sent',
   )
-  const codeC = vault.pendingPersonalRecoveryCodes.get(reqC.id)!
   S().setRole('alice')
-  await S().confirmPersonalRecoveryCode(reqC.id, codeC)
+  await S().openRecoveryEmailLink(reqC.id)
   await S().setNewPasswordAfterRecovery(reqC.id, 'hybrid-recovery-pw')
   await waitFor(
     () => S().requests.find((r) => r.id === reqC.id)!.status === 'COMPLETED',
